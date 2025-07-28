@@ -1,0 +1,1411 @@
+#include <Wire.h>
+#include <RTClib.h>
+#include <IRremote.h>
+#include <EEPROM.h>  // Arduino Internal EEPROM জুম্মার জন্য
+
+#define IR_RECEIVE_PIN 06 // IR receiver pin
+
+RTC_DS3231 rtc;
+
+// 24C512 EEPROM I2C address (typically 0x50)
+#define EEPROM_I2C_ADDRESS 0x50
+
+// EEPROM Memory Map for 24C512: (10 ALARMS ONLY - JUMMA IN INTERNAL EEPROM)
+// 0: Last Edit Field Position (for power-off resume)
+// 1-7: Reserved
+// 8-1467: ALARM1 data (365 days * 2 bytes each = 730 bytes) - FAJAR START
+// 1468-2197: ALARM2 data (365 days * 2 bytes each = 730 bytes) - FAJAR END
+// 2198-2927: ALARM3 data (365 days * 2 bytes each = 730 bytes) - JOHOR START
+// 2928-3657: ALARM4 data (365 days * 2 bytes each = 730 bytes) - JOHOR END
+// 3658-4387: ALARM5 data (365 days * 2 bytes each = 730 bytes) - ASAR START
+// 4388-5117: ALARM6 data (365 days * 2 bytes each = 730 bytes) - ASAR END
+// 5118-5847: ALARM7 data (365 days * 2 bytes each = 730 bytes) - MAGRIB START
+// 5848-6577: ALARM8 data (365 days * 2 bytes each = 730 bytes) - MAGRIB END
+// 6578-7307: ALARM9 data (365 days * 2 bytes each = 730 bytes) - ESHA START
+// 7308-8037: ALARM10 data (365 days * 2 bytes each = 730 bytes) - ESHA END
+
+// Arduino Internal EEPROM for JUMMA (1024 bytes total)
+#define INTERNAL_JUMMA_START_HOUR 1020    // jummaStartHour
+#define INTERNAL_JUMMA_START_MINUTE 1021  // jummaStartMinute  
+#define INTERNAL_JUMMA_END_HOUR 1022      // jummaEndHour
+#define INTERNAL_JUMMA_END_MINUTE 1023    // jummaEndMinute
+
+#define LAST_EDIT_FIELD_ADDR 0   // Store last edit field position
+#define ALARM1_START_ADDR 8      // FAJAR START
+#define ALARM2_START_ADDR 1468   // FAJAR END
+#define ALARM3_START_ADDR 2198   // JOHOR START
+#define ALARM4_START_ADDR 2928   // JOHOR END
+#define ALARM5_START_ADDR 3658   // ASAR START
+#define ALARM6_START_ADDR 4388   // ASAR END
+#define ALARM7_START_ADDR 5118   // MAGRIB START
+#define ALARM8_START_ADDR 5848   // MAGRIB END
+#define ALARM9_START_ADDR 6578   // ESHA START
+#define ALARM10_START_ADDR 7308  // ESHA END
+
+const int dataPin = 8;
+const int clockPin = 9;
+const int strobePin = 10;
+const int menuPin = 2;
+const int incPin = 3;
+const int decPin = 4;
+const int leftPin = 5;
+const int alarmLEDPin = 11;
+const int pmLEDPin = 7;
+
+const byte segmentFont[10] = {
+  0b00111111, 0b00000110, 0b01011011, 0b01001111, 0b01100110,
+  0b01101101, 0b01111101, 0b00000111, 0b01111111, 0b01101111
+};
+
+const byte CHAR_A = 0b01110111; // Custom segment for 'A'
+const byte CHAR_COLON = 0b01000000; // Colon ':'
+const byte CHAR_F = 0b01110001; // 'F' for FAJAR
+const byte CHAR_J = 0b00001110; // 'J' for JOHOR/JUMMA  
+const byte CHAR_S = 0b01101101; // 'S' for ASAR
+const byte CHAR_M = 0b01010101; // 'M' for MAGRIB
+const byte CHAR_E = 0b01111001; // 'E' for ESHA
+
+byte displayBuffer[80];
+int editField = -1;
+int lastSavedEditField = -1;  // Track last edit field before blinking ended
+unsigned long lastBlink = 0;
+bool blinkState = true;
+int blinkCount = 0;
+bool wasBlinking = false;
+bool editModeJustStarted = false;  // Flag to track if edit mode just started
+
+// Display refresh timing variables
+unsigned long lastDisplayUpdate = 0;
+unsigned long lastSecond = 0;
+bool displayNeedsUpdate = true;
+
+int hour, minute, second, day, month, year, dayOfWeek;
+int alarm1Hour = 5, alarm1Minute = 0;   // FAJAR START
+int alarm2Hour = 6, alarm2Minute = 30;  // FAJAR END
+int jummaStartHour = 12, jummaStartMinute = 30; // JUMMA START - Arduino Internal EEPROM
+int jummaEndHour = 14, jummaEndMinute = 0;      // JUMMA END - Arduino Internal EEPROM
+int alarm3Hour = 12, alarm3Minute = 0;  // JOHOR START
+int alarm4Hour = 13, alarm4Minute = 30; // JOHOR END
+int alarm5Hour = 15, alarm5Minute = 30; // ASAR START
+int alarm6Hour = 17, alarm6Minute = 0;  // ASAR END
+int alarm7Hour = 18, alarm7Minute = 0;  // MAGRIB START
+int alarm8Hour = 19, alarm8Minute = 0;  // MAGRIB END
+int alarm9Hour = 20, alarm9Minute = 0;  // ESHA START
+int alarm10Hour = 22, alarm10Minute = 0; // ESHA END
+
+bool alarmTriggered = false;
+int activeAlarm = 0;
+unsigned long alarmDisplayStart = 0;
+bool alarmTimeDisplayActive = false;
+int triggerDay = 0; // Store the day when alarm was triggered
+int currentNamazRange = 0; // Track which namaz range is active
+
+// Function to save last edit field position to EEPROM
+void saveLastEditField(int field) {
+  writeEEPROM(EEPROM_I2C_ADDRESS, LAST_EDIT_FIELD_ADDR, (byte)field);
+}
+
+// Function to read last edit field position from EEPROM
+int readLastEditField() {
+  byte field = readEEPROM(EEPROM_I2C_ADDRESS, LAST_EDIT_FIELD_ADDR);
+  // 31 fields total (0-30): 7 time/date + 24 alarm fields
+  if (field == 0xFF || field > 30) return 0; 
+  return (int)field;
+}
+
+// JUMMA Functions for Arduino Internal EEPROM
+void saveJummaToInternalEEPROM() {
+  EEPROM.write(INTERNAL_JUMMA_START_HOUR, jummaStartHour);
+  EEPROM.write(INTERNAL_JUMMA_START_MINUTE, jummaStartMinute);
+  EEPROM.write(INTERNAL_JUMMA_END_HOUR, jummaEndHour);
+  EEPROM.write(INTERNAL_JUMMA_END_MINUTE, jummaEndMinute);
+}
+
+void loadJummaFromInternalEEPROM() {
+  byte startH = EEPROM.read(INTERNAL_JUMMA_START_HOUR);
+  byte startM = EEPROM.read(INTERNAL_JUMMA_START_MINUTE);
+  byte endH = EEPROM.read(INTERNAL_JUMMA_END_HOUR);
+  byte endM = EEPROM.read(INTERNAL_JUMMA_END_MINUTE);
+  
+  // Validate and set defaults if invalid
+  if (startH == 0xFF || startH < 1 || startH > 12) jummaStartHour = 12; else jummaStartHour = startH;
+  if (startM == 0xFF || startM > 59) jummaStartMinute = 30; else jummaStartMinute = startM;
+  if (endH == 0xFF || endH < 1 || endH > 12) jummaEndHour = 2; else jummaEndHour = endH;
+  if (endM == 0xFF || endM > 59) jummaEndMinute = 0; else jummaEndMinute = endM;
+}
+
+// EEPROM Functions for 24C512 (Enhanced)
+void writeEEPROM(int deviceaddress, unsigned int eeaddress, byte data) {
+  Wire.beginTransmission(deviceaddress);
+  Wire.write((int)(eeaddress >> 8)); // MSB
+  Wire.write((int)(eeaddress & 0xFF)); // LSB
+  Wire.write(data);
+  Wire.endTransmission();
+  delay(10); // 24C512 needs longer delay
+}
+
+byte readEEPROM(int deviceaddress, unsigned int eeaddress) {
+  byte rdata = 0xFF;
+  Wire.beginTransmission(deviceaddress);
+  Wire.write((int)(eeaddress >> 8)); // MSB
+  Wire.write((int)(eeaddress & 0xFF)); // LSB
+  Wire.endTransmission();
+  Wire.requestFrom(deviceaddress, 1);
+  if (Wire.available()) rdata = Wire.read();
+  return rdata;
+}
+
+// Function to read alarm data directly from EEPROM for specific day - 10 ALARMS ONLY
+void readDayAlarmFromEEPROM(int dayOfYear, int &alarm1H, int &alarm1M, int &alarm2H, int &alarm2M, 
+                           int &alarm3H, int &alarm3M, int &alarm4H, int &alarm4M,
+                           int &alarm5H, int &alarm5M, int &alarm6H, int &alarm6M,
+                           int &alarm7H, int &alarm7M, int &alarm8H, int &alarm8M,
+                           int &alarm9H, int &alarm9M, int &alarm10H, int &alarm10M) {
+  // Ensure dayOfYear is in valid range (1-365)
+  if (dayOfYear < 1 || dayOfYear > 365) {
+    alarm1H = 5; alarm1M = 0;     // FAJAR START
+    alarm2H = 6; alarm2M = 30;    // FAJAR END
+    alarm3H = 12; alarm3M = 0;    // JOHOR START
+    alarm4H = 1; alarm4M = 30;    // JOHOR END
+    alarm5H = 3; alarm5M = 30;    // ASAR START
+    alarm6H = 5; alarm6M = 0;     // ASAR END
+    alarm7H = 6; alarm7M = 0;     // MAGRIB START
+    alarm8H = 7; alarm8M = 0;     // MAGRIB END
+    alarm9H = 8; alarm9M = 0;     // ESHA START
+    alarm10H = 10; alarm10M = 0;  // ESHA END
+    return;
+  }
+
+  // Calculate EEPROM addresses for this day
+  int alarm1Addr = ALARM1_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm2Addr = ALARM2_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm3Addr = ALARM3_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm4Addr = ALARM4_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm5Addr = ALARM5_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm6Addr = ALARM6_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm7Addr = ALARM7_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm8Addr = ALARM8_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm9Addr = ALARM9_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm10Addr = ALARM10_START_ADDR + (dayOfYear - 1) * 2;
+
+  // Read all alarm data
+  alarm1H = readEEPROM(EEPROM_I2C_ADDRESS, alarm1Addr);
+  alarm1M = readEEPROM(EEPROM_I2C_ADDRESS, alarm1Addr + 1);
+  alarm2H = readEEPROM(EEPROM_I2C_ADDRESS, alarm2Addr);
+  alarm2M = readEEPROM(EEPROM_I2C_ADDRESS, alarm2Addr + 1);
+  alarm3H = readEEPROM(EEPROM_I2C_ADDRESS, alarm3Addr);
+  alarm3M = readEEPROM(EEPROM_I2C_ADDRESS, alarm3Addr + 1);
+  alarm4H = readEEPROM(EEPROM_I2C_ADDRESS, alarm4Addr);
+  alarm4M = readEEPROM(EEPROM_I2C_ADDRESS, alarm4Addr + 1);
+  alarm5H = readEEPROM(EEPROM_I2C_ADDRESS, alarm5Addr);
+  alarm5M = readEEPROM(EEPROM_I2C_ADDRESS, alarm5Addr + 1);
+  alarm6H = readEEPROM(EEPROM_I2C_ADDRESS, alarm6Addr);
+  alarm6M = readEEPROM(EEPROM_I2C_ADDRESS, alarm6Addr + 1);
+  alarm7H = readEEPROM(EEPROM_I2C_ADDRESS, alarm7Addr);
+  alarm7M = readEEPROM(EEPROM_I2C_ADDRESS, alarm7Addr + 1);
+  alarm8H = readEEPROM(EEPROM_I2C_ADDRESS, alarm8Addr);
+  alarm8M = readEEPROM(EEPROM_I2C_ADDRESS, alarm8Addr + 1);
+  alarm9H = readEEPROM(EEPROM_I2C_ADDRESS, alarm9Addr);
+  alarm9M = readEEPROM(EEPROM_I2C_ADDRESS, alarm9Addr + 1);
+  alarm10H = readEEPROM(EEPROM_I2C_ADDRESS, alarm10Addr);
+  alarm10M = readEEPROM(EEPROM_I2C_ADDRESS, alarm10Addr + 1);
+
+  // Validate and set defaults if invalid
+  if (alarm1H == 0xFF || alarm1H < 1 || alarm1H > 12) alarm1H = 5;
+  if (alarm1M == 0xFF || alarm1M > 59) alarm1M = 0;
+  if (alarm2H == 0xFF || alarm2H < 1 || alarm2H > 12) alarm2H = 6;
+  if (alarm2M == 0xFF || alarm2M > 59) alarm2M = 30;
+  if (alarm3H == 0xFF || alarm3H < 1 || alarm3H > 12) alarm3H = 12;
+  if (alarm3M == 0xFF || alarm3M > 59) alarm3M = 0;
+  if (alarm4H == 0xFF || alarm4H < 1 || alarm4H > 12) alarm4H = 1;
+  if (alarm4M == 0xFF || alarm4M > 59) alarm4M = 30;
+  if (alarm5H == 0xFF || alarm5H < 1 || alarm5H > 12) alarm5H = 3;
+  if (alarm5M == 0xFF || alarm5M > 59) alarm5M = 30;
+  if (alarm6H == 0xFF || alarm6H < 1 || alarm6H > 12) alarm6H = 5;
+  if (alarm6M == 0xFF || alarm6M > 59) alarm6M = 0;
+  if (alarm7H == 0xFF || alarm7H < 1 || alarm7H > 12) alarm7H = 6;
+  if (alarm7M == 0xFF || alarm7M > 59) alarm7M = 0;
+  if (alarm8H == 0xFF || alarm8H < 1 || alarm8H > 12) alarm8H = 7;
+  if (alarm8M == 0xFF || alarm8M > 59) alarm8M = 0;
+  if (alarm9H == 0xFF || alarm9H < 1 || alarm9H > 12) alarm9H = 8;
+  if (alarm9M == 0xFF || alarm9M > 59) alarm9M = 0;
+  if (alarm10H == 0xFF || alarm10H < 1 || alarm10H > 12) alarm10H = 10;
+  if (alarm10M == 0xFF || alarm10M > 59) alarm10M = 0;
+}
+
+// Function to write alarm data directly to EEPROM for specific day - 10 ALARMS ONLY
+void writeDayAlarmToEEPROM(int dayOfYear, int alarm1H, int alarm1M, int alarm2H, int alarm2M,
+                          int alarm3H, int alarm3M, int alarm4H, int alarm4M,
+                          int alarm5H, int alarm5M, int alarm6H, int alarm6M,
+                          int alarm7H, int alarm7M, int alarm8H, int alarm8M,
+                          int alarm9H, int alarm9M, int alarm10H, int alarm10M) {
+  // Ensure dayOfYear is in valid range (1-365)
+  if (dayOfYear < 1 || dayOfYear > 365) return;
+
+  // Calculate EEPROM addresses for this day
+  int alarm1Addr = ALARM1_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm2Addr = ALARM2_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm3Addr = ALARM3_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm4Addr = ALARM4_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm5Addr = ALARM5_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm6Addr = ALARM6_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm7Addr = ALARM7_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm8Addr = ALARM8_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm9Addr = ALARM9_START_ADDR + (dayOfYear - 1) * 2;
+  int alarm10Addr = ALARM10_START_ADDR + (dayOfYear - 1) * 2;
+
+  // Write all alarm data
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm1Addr, alarm1H);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm1Addr + 1, alarm1M);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm2Addr, alarm2H);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm2Addr + 1, alarm2M);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm3Addr, alarm3H);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm3Addr + 1, alarm3M);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm4Addr, alarm4H);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm4Addr + 1, alarm4M);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm5Addr, alarm5H);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm5Addr + 1, alarm5M);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm6Addr, alarm6H);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm6Addr + 1, alarm6M);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm7Addr, alarm7H);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm7Addr + 1, alarm7M);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm8Addr, alarm8H);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm8Addr + 1, alarm8M);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm9Addr, alarm9H);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm9Addr + 1, alarm9M);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm10Addr, alarm10H);
+  writeEEPROM(EEPROM_I2C_ADDRESS, alarm10Addr + 1, alarm10M);
+}
+
+// Function to initialize all 365 days with default values - 10 ALARMS ONLY
+void initializeEEPROMAlarms() {
+  Serial.println("Initializing 24C512 EEPROM with default alarm values...");
+  for (int day = 1; day <= 365; day++) {
+    writeDayAlarmToEEPROM(day, 5, 0, 6, 30, 12, 0, 1, 30, 3, 30, 5, 0, 6, 0, 7, 0, 8, 0, 10, 0);
+    
+    // Show progress every 50 days
+    if (day % 50 == 0) {
+      Serial.print("Initialized day ");
+      Serial.println(day);
+    }
+  }
+  Serial.println("24C512 EEPROM initialization complete!");
+}
+
+// Function to verify 24C512
+bool verify24C512() {
+  Serial.println("Verifying EEPROM type...");
+  
+  // Write test pattern to high address (only available in 24C512)
+  unsigned int testAddress = 32768; // This address doesn't exist in 24C32
+  byte testPattern = 0xA5;
+  
+  writeEEPROM(EEPROM_I2C_ADDRESS, testAddress, testPattern);
+  delay(50);
+  byte readValue = readEEPROM(EEPROM_I2C_ADDRESS, testAddress);
+  
+  if (readValue == testPattern) {
+    Serial.println("Confirmed: 24C512 EEPROM detected");
+    return true;
+  } else {
+    Serial.println("Warning: May not be 24C512 or connection issue");
+    return false;
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+  rtc.begin();
+
+  // Initialize IR receiver
+  IrReceiver.begin(IR_RECEIVE_PIN, ENABLE_LED_FEEDBACK);
+
+  pinMode(dataPin, OUTPUT);
+  pinMode(clockPin, OUTPUT);
+  pinMode(strobePin, OUTPUT);
+  pinMode(menuPin, INPUT_PULLUP);
+  pinMode(incPin, INPUT_PULLUP);
+  pinMode(decPin, INPUT_PULLUP);
+  pinMode(leftPin, INPUT_PULLUP);
+  pinMode(alarmLEDPin, OUTPUT);
+  pinMode(pmLEDPin, OUTPUT);
+
+  // 24C512 EEPROM Test and Verification
+  Serial.println("=== 24C512 EEPROM System ===");
+  
+  // Verify that we have 24C512
+  if (verify24C512()) {
+    Serial.println("✓ 24C512 verified successfully");
+  } else {
+    Serial.println("✗ 24C512 verification failed - check connections");
+  }
+
+  // Enhanced EEPROM connection test
+  Serial.println("Testing 24C512 EEPROM connection...");
+  
+  // Test low address (compatible with both 24C32 and 24C512)
+  writeEEPROM(EEPROM_I2C_ADDRESS, 1, 0xAA);
+  delay(50);
+  byte testLow = readEEPROM(EEPROM_I2C_ADDRESS, 1);
+  
+  // Test high address (only available in 24C512)
+  writeEEPROM(EEPROM_I2C_ADDRESS, 16384, 0x55);
+  delay(50);
+  byte testHigh = readEEPROM(EEPROM_I2C_ADDRESS, 16384);
+  
+  if (testLow == 0xAA && testHigh == 0x55) {
+    Serial.println("✓ 24C512 EEPROM connection perfect!");
+  } else if (testLow == 0xAA) {
+    Serial.println("⚠ EEPROM responding but high address failed");
+  } else {
+    Serial.println("✗ EEPROM connection failed!");
+  }
+
+  // Check if this is first boot (check a signature byte)
+  byte signature = readEEPROM(EEPROM_I2C_ADDRESS, 2);
+  if (signature != 0xBE) { // 0xBE is our signature for initialized EEPROM
+    Serial.println("First boot detected - initializing EEPROM...");
+    initializeEEPROMAlarms();
+    // Write signature to indicate EEPROM is initialized
+    writeEEPROM(EEPROM_I2C_ADDRESS, 2, 0xBE);
+    Serial.println("EEPROM initialization complete");
+  } else {
+    Serial.println("EEPROM already initialized - loading existing data");
+  }
+
+  // Load JUMMA from Arduino Internal EEPROM
+  loadJummaFromInternalEEPROM();
+  Serial.print("JUMMA loaded from internal EEPROM: ");
+  Serial.print(jummaStartHour); Serial.print(":"); Serial.print(jummaStartMinute);
+  Serial.print(" - "); Serial.print(jummaEndHour); Serial.print(":"); Serial.println(jummaEndMinute);
+
+  if (rtc.lostPower()) {
+    Serial.println("RTC lost power - setting time from compile time");
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+
+  loadTime();
+  loadCurrentDayAlarm();
+
+  // Read last edit field position from EEPROM (for power-off resume)
+  lastSavedEditField = readLastEditField();
+  
+  Serial.println("=== System Ready ===");
+  Serial.print("24C512 Memory used: ");
+  Serial.print(ALARM10_START_ADDR + 730);
+  Serial.println(" bytes");
+  Serial.println("Arduino Internal EEPROM used for JUMMA: 4 bytes");
+  
+  // Force initial display update
+  displayNeedsUpdate = true;
+}
+
+void loop() {
+  handleSwitches();
+  DateTime now = rtc.now();
+  int currentSecond = now.second();
+
+  // Check if second has changed
+  if (currentSecond != lastSecond) {
+    lastSecond = currentSecond;
+    displayNeedsUpdate = true;
+  }
+
+  if (editField == -1) {
+    // Always update time from RTC when not in edit mode
+    hour = now.hour();
+    minute = now.minute();
+    second = currentSecond;
+    day = now.day();
+    month = now.month();
+    year = now.year() % 100;
+    dayOfWeek = now.dayOfTheWeek(); // 0=Sunday, 1=Monday, ..., 5=Friday, 6=Saturday
+
+    // Load alarms for current date
+    loadCurrentDayAlarm();
+  }
+
+  int displayHour = hour % 12;
+  if (displayHour == 0) displayHour = 12;
+
+  digitalWrite(pmLEDPin, (hour >= 12) ? HIGH : LOW);
+
+  // Friday Logic: Use JUMMA instead of JOHOR
+  bool isFriday = (dayOfWeek == 5);
+  
+  // Check all exact alarm matches
+  bool alarmMatch2 = (hour % 12) == (alarm2Hour % 12) && minute == alarm2Minute;   // FAJAR END
+  bool alarmMatch4, alarmMatch6, alarmMatch8, alarmMatch10;
+  bool alarmMatchJummaEnd = false;
+  
+  if (isFriday) {
+    // On Friday, check JUMMA END instead of JOHOR END
+    alarmMatchJummaEnd = (hour % 12) == (jummaEndHour % 12) && minute == jummaEndMinute;
+    alarmMatch4 = false; // Disable JOHOR END on Friday
+  } else {
+    alarmMatch4 = (hour % 12) == (alarm4Hour % 12) && minute == alarm4Minute;   // JOHOR END
+  }
+  
+  alarmMatch6 = (hour % 12) == (alarm6Hour % 12) && minute == alarm6Minute;   // ASAR END
+  alarmMatch8 = (hour % 12) == (alarm8Hour % 12) && minute == alarm8Minute;   // MAGRIB END
+  alarmMatch10 = (hour % 12) == (alarm10Hour % 12) && minute == alarm10Minute; // ESHA END
+  
+  // Check if RTC time is in NAMAZ ranges
+  bool timeInFajarRange = isTimeBetweenAlarms(hour, minute, alarm1Hour, alarm1Minute, alarm2Hour, alarm2Minute);
+  bool timeInJohorRange = false;
+  bool timeInJummaRange = false;
+  
+  if (isFriday) {
+    timeInJummaRange = isTimeBetweenAlarms(hour, minute, jummaStartHour, jummaStartMinute, jummaEndHour, jummaEndMinute);
+  } else {
+    timeInJohorRange = isTimeBetweenAlarms(hour, minute, alarm3Hour, alarm3Minute, alarm4Hour, alarm4Minute);
+  }
+  
+  bool timeInAsarRange = isTimeBetweenAlarms(hour, minute, alarm5Hour, alarm5Minute, alarm6Hour, alarm6Minute);
+  bool timeInMagribRange = isTimeBetweenAlarms(hour, minute, alarm7Hour, alarm7Minute, alarm8Hour, alarm8Minute);
+  bool timeInEshaRange = isTimeBetweenAlarms(hour, minute, alarm9Hour, alarm9Minute, alarm10Hour, alarm10Minute);
+
+  // Determine current namaz range
+  int newNamazRange = 0;
+  if (timeInFajarRange) newNamazRange = 1;        // FAJAR
+  else if (isFriday && timeInJummaRange) newNamazRange = 7;   // JUMMA (special case)
+  else if (!isFriday && timeInJohorRange) newNamazRange = 2; // JOHOR (only non-Friday)
+  else if (timeInAsarRange) newNamazRange = 3;    // ASAR
+  else if (timeInMagribRange) newNamazRange = 4;  // MAGRIB
+  else if (timeInEshaRange) newNamazRange = 5;    // ESHA
+  else {
+    // Find next namaz time
+    newNamazRange = getNextNamazRange(hour, minute, isFriday);
+  }
+
+  // Check if namaz range has changed or alarm triggered
+  if (newNamazRange != currentNamazRange || alarmMatch2 || alarmMatch4 || alarmMatchJummaEnd || alarmMatch6 || alarmMatch8 || alarmMatch10) {
+    currentNamazRange = newNamazRange;
+    alarmTriggered = true;
+    alarmDisplayStart = millis();
+    
+    // Determine which alarm/range triggered
+    if (alarmMatch2) activeAlarm = 2;
+    else if (alarmMatch4) activeAlarm = 4;
+    else if (alarmMatchJummaEnd) activeAlarm = 11; // JUMMA END
+    else if (alarmMatch6) activeAlarm = 6;
+    else if (alarmMatch8) activeAlarm = 8;
+    else if (alarmMatch10) activeAlarm = 10;
+    else activeAlarm = currentNamazRange * 100; // 100=FAJAR, 200=JOHOR, 300=ASAR, 400=MAGRIB, 500=ESHA, 700=JUMMA
+    
+    alarmTimeDisplayActive = true;
+    triggerDay = day;
+    displayNeedsUpdate = true;
+  }
+
+  // Check if day has changed - if so, deactivate alarm time display
+  if (alarmTimeDisplayActive && day != triggerDay) {
+    alarmTimeDisplayActive = false;
+    triggerDay = 0;
+    displayNeedsUpdate = true;
+  }
+
+  // LED shows if any namaz time is active
+  bool anyNamazActive = (timeInFajarRange || timeInJohorRange || timeInJummaRange || timeInAsarRange || timeInMagribRange || timeInEshaRange || 
+                        alarmMatch2 || alarmMatch4 || alarmMatchJummaEnd || alarmMatch6 || alarmMatch8 || alarmMatch10);
+  digitalWrite(alarmLEDPin, anyNamazActive ? HIGH : LOW);
+
+  // Handle blinking completion and return to RTC time
+  if (editField != -1 && wasBlinking && !blinkState) {
+    wasBlinking = false;
+    blinkCount++;
+    if (blinkCount >= 10) {
+      // Save appropriate data based on edit field
+      if (editField >= 7 && editField <= 30) {  // All alarm fields
+        if (editField >= 11 && editField <= 14) {
+          // JUMMA fields (11-14) - save to Arduino Internal EEPROM
+          saveJummaToInternalEEPROM();
+        } else {
+          // Other alarm fields - save to 24C512 EEPROM
+          int dayOfYear = getDayOfYear(day, month, 2000 + year);
+          writeDayAlarmToEEPROM(dayOfYear, alarm1Hour, alarm1Minute, alarm2Hour, alarm2Minute,
+                               alarm3Hour, alarm3Minute, alarm4Hour, alarm4Minute,
+                               alarm5Hour, alarm5Minute, alarm6Hour, alarm6Minute,
+                               alarm7Hour, alarm7Minute, alarm8Hour, alarm8Minute,
+                               alarm9Hour, alarm9Minute, alarm10Hour, alarm10Minute);
+        }
+      }
+      else if (editField >= 0 && editField <= 6) {
+        saveTime();
+      }
+
+      // Save current edit field position to EEPROM before exiting edit mode
+      lastSavedEditField = editField;
+      saveLastEditField(lastSavedEditField);
+      
+      // Reset edit field and immediately update time from RTC
+      editField = -1;
+      editModeJustStarted = false;
+      
+      // Force immediate update from RTC
+      DateTime currentTime = rtc.now();
+      hour = currentTime.hour();
+      minute = currentTime.minute();
+      second = currentTime.second();
+      day = currentTime.day();
+      month = currentTime.month();
+      year = currentTime.year() % 100;
+      dayOfWeek = currentTime.dayOfTheWeek();
+
+      // Load alarms for current date
+      loadCurrentDayAlarm();
+      displayNeedsUpdate = true;
+    }
+  }
+
+  // Handle blinking for edit mode
+  if (editField != -1 && millis() - lastBlink > 500) {
+    blinkState = !blinkState;
+    lastBlink = millis();
+    displayNeedsUpdate = true; // Update display when blinking changes
+    if (blinkState) wasBlinking = true;
+  }
+
+  // Update display only once per second or when needed
+  if (displayNeedsUpdate && (millis() - lastDisplayUpdate >= 1000 || editField != -1)) {
+    updateDisplay(displayHour);
+    lastDisplayUpdate = millis();
+    displayNeedsUpdate = false;
+  }
+
+  // Reduced delay for better button responsiveness
+  delay(10);
+}
+
+int getDayOfYear(int day, int month, int year) {
+  int daysInMonth[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  
+  // Check for leap year
+  if (isLeapYear(year)) {
+    daysInMonth[2] = 29;
+  }
+
+  int dayOfYear = 0;  
+  for (int i = 1; i < month; i++) {
+    dayOfYear += daysInMonth[i];
+  }
+  dayOfYear += day;
+  return dayOfYear;
+}
+
+bool isLeapYear(int year) {
+  return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+// Function to check if current time is between two alarms
+bool isTimeBetweenAlarms(int currentHour, int currentMinute, int startH, int startM, int endH, int endM) {
+  // Convert times to minutes for easier comparison
+  int currentTotalMinutes = (currentHour % 12) * 60 + currentMinute;
+  int startTotalMinutes = (startH % 12) * 60 + startM;
+  int endTotalMinutes = (endH % 12) * 60 + endM;
+  
+  // Handle case where end time is earlier than start time (crosses midnight)
+  if (endTotalMinutes < startTotalMinutes) {
+    // Range crosses midnight
+    return (currentTotalMinutes >= startTotalMinutes || currentTotalMinutes <= endTotalMinutes);
+  } else {
+    // Normal range within same day
+    return (currentTotalMinutes >= startTotalMinutes && currentTotalMinutes <= endTotalMinutes);
+  }
+}
+
+// Function to get next namaz range when no current namaz is active - UPDATED FOR FRIDAY
+int getNextNamazRange(int currentHour, int currentMinute, bool isFriday) {
+  int currentTotalMinutes = currentHour * 60 + currentMinute;
+  
+  // Convert all namaz times to total minutes
+  int fajarStart = convertTo24HourMinutes(alarm1Hour, alarm1Minute, true); // AM
+  int johorStart = convertTo24HourMinutes(alarm3Hour, alarm3Minute, false); // PM
+  int jummaStart = convertTo24HourMinutes(jummaStartHour, jummaStartMinute, false); // PM
+  int asarStart = convertTo24HourMinutes(alarm5Hour, alarm5Minute, false); // PM
+  int magribStart = convertTo24HourMinutes(alarm7Hour, alarm7Minute, false); // PM
+  int eshaStart = convertTo24HourMinutes(alarm9Hour, alarm9Minute, false); // PM
+  
+  // Find next namaz based on day
+  if (currentTotalMinutes < fajarStart) return 6; // Next is FAJAR
+  else if (isFriday && currentTotalMinutes < jummaStart) return 6; // Next is JUMMA
+  else if (!isFriday && currentTotalMinutes < johorStart) return 6; // Next is JOHOR
+  else if (currentTotalMinutes < asarStart) return 6; // Next is ASAR
+  else if (currentTotalMinutes < magribStart) return 6; // Next is MAGRIB
+  else if (currentTotalMinutes < eshaStart) return 6; // Next is ESHA
+  else return 6; // Next day FAJAR
+}
+
+int convertTo24HourMinutes(int hour, int minute, bool isAM) {
+  int hour24 = hour;
+  if (!isAM && hour != 12) hour24 += 12;
+  if (isAM && hour == 12) hour24 = 0;
+  return hour24 * 60 + minute;
+}
+
+void loadCurrentDayAlarm() {
+  int dayOfYear = getDayOfYear(day, month, 2000 + year);
+  // Read alarm data directly from EEPROM for current day - 10 ALARMS ONLY
+  readDayAlarmFromEEPROM(dayOfYear, alarm1Hour, alarm1Minute, alarm2Hour, alarm2Minute,
+                        alarm3Hour, alarm3Minute, alarm4Hour, alarm4Minute,
+                        alarm5Hour, alarm5Minute, alarm6Hour, alarm6Minute,
+                        alarm7Hour, alarm7Minute, alarm8Hour, alarm8Minute,
+                        alarm9Hour, alarm9Minute, alarm10Hour, alarm10Minute);
+}
+
+//**************************************************************************
+// DISPLAY FUNCTION - সিম্পিল লজিক: ফজর→জুম্মা/যোহর→আসর→মাগরিব→এশা
+//**************************************************************************
+void updateDisplay(int dispHour) {
+  // Clear all buffer first
+  for (int i = 0; i < 80; i++) {
+    displayBuffer[i] = 0;
+  }
+
+  // Time display (positions 0-5)
+  displayBuffer[0] = segmentFont[dispHour / 10];
+  displayBuffer[1] = segmentFont[dispHour % 10];
+  displayBuffer[2] = segmentFont[minute / 10];
+  displayBuffer[3] = segmentFont[minute % 10];
+  displayBuffer[4] = segmentFont[second / 10];
+  displayBuffer[5] = segmentFont[second % 10];
+
+  // Date display (positions 6-11)
+  displayBuffer[6] = segmentFont[day / 10];
+  displayBuffer[7] = segmentFont[day % 10];
+  displayBuffer[8] = segmentFont[month / 10];
+  displayBuffer[9] = segmentFont[month % 10];
+  displayBuffer[10] = segmentFont[year / 10];
+  displayBuffer[11] = segmentFont[year % 10];
+
+  // Day of Week (position 12)
+  displayBuffer[12] = segmentFont[dayOfWeek];
+
+  // NEW EDIT ORDER LAYOUT (ফজর→জুম্মা→যোহর→আসর→মাগরিব→এশা)
+  // FAJAR (13-18: START H:MM END H:MM)
+  displayBuffer[13] = segmentFont[alarm1Hour % 10]; // FAJAR START
+  displayBuffer[14] = segmentFont[alarm1Minute / 10];
+  displayBuffer[15] = segmentFont[alarm1Minute % 10];
+  displayBuffer[16] = segmentFont[alarm2Hour % 10]; // FAJAR END
+  displayBuffer[17] = segmentFont[alarm2Minute / 10];
+  displayBuffer[18] = segmentFont[alarm2Minute % 10];
+  
+  // JUMMA (19-26: START HH:MM END HH:MM) - Double digit
+  displayBuffer[19] = segmentFont[jummaStartHour / 10]; // JUMMA START
+  displayBuffer[20] = segmentFont[jummaStartHour % 10];
+  displayBuffer[21] = segmentFont[jummaStartMinute / 10];
+  displayBuffer[22] = segmentFont[jummaStartMinute % 10];
+  displayBuffer[23] = segmentFont[jummaEndHour / 10]; // JUMMA END
+  displayBuffer[24] = segmentFont[jummaEndHour % 10];
+  displayBuffer[25] = segmentFont[jummaEndMinute / 10];
+  displayBuffer[26] = segmentFont[jummaEndMinute % 10];
+  
+  // JOHAR (27-34: START HH:MM END H:MM)
+  displayBuffer[27] = segmentFont[alarm3Hour / 10]; // JOHAR START
+  displayBuffer[28] = segmentFont[alarm3Hour % 10];
+  displayBuffer[29] = segmentFont[alarm3Minute / 10];
+  displayBuffer[30] = segmentFont[alarm3Minute % 10];
+  displayBuffer[31] = segmentFont[alarm4Hour % 10]; // JOHAR END
+  displayBuffer[32] = segmentFont[alarm4Minute / 10];
+  displayBuffer[33] = segmentFont[alarm4Minute % 10];
+  
+  // ASAR (34-39: START H:MM END H:MM)
+  displayBuffer[34] = segmentFont[alarm5Hour % 10]; // ASAR START
+  displayBuffer[35] = segmentFont[alarm5Minute / 10];
+  displayBuffer[36] = segmentFont[alarm5Minute % 10];
+  displayBuffer[37] = segmentFont[alarm6Hour % 10]; // ASAR END
+  displayBuffer[38] = segmentFont[alarm6Minute / 10];
+  displayBuffer[39] = segmentFont[alarm6Minute % 10];
+  
+  // MAGRIB (40-45: START H:MM END H:MM)
+  displayBuffer[40] = segmentFont[alarm7Hour % 10]; // MAGRIB START
+  displayBuffer[41] = segmentFont[alarm7Minute / 10];
+  displayBuffer[42] = segmentFont[alarm7Minute % 10];
+  displayBuffer[43] = segmentFont[alarm8Hour % 10]; // MAGRIB END
+  displayBuffer[44] = segmentFont[alarm8Minute / 10];
+  displayBuffer[45] = segmentFont[alarm8Minute % 10];
+  
+  // ESHA (46-51: START H:MM END H:MM)
+  displayBuffer[46] = segmentFont[alarm9Hour % 10]; // ESHA START
+  displayBuffer[47] = segmentFont[alarm9Minute / 10];
+  displayBuffer[48] = segmentFont[alarm9Minute % 10];
+  displayBuffer[49] = segmentFont[alarm10Hour % 10]; // ESHA END
+  displayBuffer[50] = segmentFont[alarm10Minute / 10];
+  displayBuffer[51] = segmentFont[alarm10Minute % 10];
+
+  // Position 52 - BLANK
+  displayBuffer[52] = 0;
+
+  // Blinking logic for edit mode - NEW FIELD MAPPING (31 fields: 0-30)
+  if (editField != -1 && !blinkState) {
+    // Time/Date fields (0-6)
+    if (editField == 0) { displayBuffer[0] = 0; displayBuffer[1] = 0; } // Hour
+    else if (editField == 1) { displayBuffer[2] = 0; displayBuffer[3] = 0; } // Minute
+    else if (editField == 2) { displayBuffer[4] = 0; displayBuffer[5] = 0; } // Second
+    else if (editField == 3) { displayBuffer[6] = 0; displayBuffer[7] = 0; } // Day
+    else if (editField == 4) { displayBuffer[8] = 0; displayBuffer[9] = 0; } // Month
+    else if (editField == 5) { displayBuffer[10] = 0; displayBuffer[11] = 0; } // Year
+    else if (editField == 6) { displayBuffer[12] = 0; } // Day of Week
+    
+    // FAJAR fields (7-10)
+    else if (editField == 7) { displayBuffer[13] = 0; } // FAJAR START Hour
+    else if (editField == 8) { displayBuffer[14] = 0; displayBuffer[15] = 0; } // FAJAR START Minute
+    else if (editField == 9) { displayBuffer[16] = 0; } // FAJAR END Hour
+    else if (editField == 10) { displayBuffer[17] = 0; displayBuffer[18] = 0; } // FAJAR END Minute
+    
+    // JUMMA fields (11-14)
+    else if (editField == 11) { displayBuffer[19] = 0; displayBuffer[20] = 0; } // JUMMA START Hour
+    else if (editField == 12) { displayBuffer[21] = 0; displayBuffer[22] = 0; } // JUMMA START Minute
+    else if (editField == 13) { displayBuffer[23] = 0; displayBuffer[24] = 0; } // JUMMA END Hour
+    else if (editField == 14) { displayBuffer[25] = 0; displayBuffer[26] = 0; } // JUMMA END Minute
+    
+    // JOHAR fields (15-18)
+    else if (editField == 15) { displayBuffer[27] = 0; displayBuffer[28] = 0; } // JOHAR START Hour
+    else if (editField == 16) { displayBuffer[29] = 0; displayBuffer[30] = 0; } // JOHAR START Minute
+    else if (editField == 17) { displayBuffer[31] = 0; } // JOHAR END Hour
+    else if (editField == 18) { displayBuffer[32] = 0; displayBuffer[33] = 0; } // JOHAR END Minute
+    
+    // ASAR fields (19-22)
+    else if (editField == 19) { displayBuffer[34] = 0; } // ASAR START Hour
+    else if (editField == 20) { displayBuffer[35] = 0; displayBuffer[36] = 0; } // ASAR START Minute
+    else if (editField == 21) { displayBuffer[37] = 0; } // ASAR END Hour
+    else if (editField == 22) { displayBuffer[38] = 0; displayBuffer[39] = 0; } // ASAR END Minute
+    
+    // MAGRIB fields (23-26)
+    else if (editField == 23) { displayBuffer[40] = 0; } // MAGRIB START Hour
+    else if (editField == 24) { displayBuffer[41] = 0; displayBuffer[42] = 0; } // MAGRIB START Minute
+    else if (editField == 25) { displayBuffer[43] = 0; } // MAGRIB END Hour
+    else if (editField == 26) { displayBuffer[44] = 0; displayBuffer[45] = 0; } // MAGRIB END Minute
+    
+    // ESHA fields (27-30)
+    else if (editField == 27) { displayBuffer[46] = 0; } // ESHA START Hour
+    else if (editField == 28) { displayBuffer[47] = 0; displayBuffer[48] = 0; } // ESHA START Minute
+    else if (editField == 29) { displayBuffer[49] = 0; } // ESHA END Hour
+    else if (editField == 30) { displayBuffer[50] = 0; displayBuffer[51] = 0; } // ESHA END Minute
+  }
+
+  // সিম্পিল INTELLIGENT NAMAZ TIME DISPLAY (positions 53-60)
+  bool isFriday = (dayOfWeek == 5);
+  int currentHour24 = hour;
+  int currentMinute24 = minute;
+  int currentTotalMinutes = currentHour24 * 60 + currentMinute24;
+  
+  // Convert all namaz END times to 24-hour format
+  int fajarEndMinutes = convertTo24HourMinutes(alarm2Hour, alarm2Minute, true);
+  int jummaEndMinutes = convertTo24HourMinutes(jummaEndHour, jummaEndMinute, false);
+  int johorEndMinutes = convertTo24HourMinutes(alarm4Hour, alarm4Minute, false);
+  int asarEndMinutes = convertTo24HourMinutes(alarm6Hour, alarm6Minute, false);
+  int magribEndMinutes = convertTo24HourMinutes(alarm8Hour, alarm8Minute, false);
+  int eshaEndMinutes = convertTo24HourMinutes(alarm10Hour, alarm10Minute, false);
+
+  // Clear positions 53-60 first
+  for (int i = 53; i <= 60; i++) displayBuffer[i] = 0;
+
+  // ** সিম্পিল LOGIC: ফজর→জুম্মা/যোহর→আসর→মাগরিব→এশা **
+  if (currentTotalMinutes <= fajarEndMinutes) {
+    // Show FAJAR time
+    displayBuffer[53] = segmentFont[alarm1Hour % 10];
+    displayBuffer[54] = segmentFont[alarm1Minute / 10];
+    displayBuffer[55] = segmentFont[alarm1Minute % 10];
+    displayBuffer[56] = 0;
+    displayBuffer[57] = segmentFont[alarm2Hour % 10];
+    displayBuffer[58] = segmentFont[alarm2Minute / 10];
+    displayBuffer[59] = segmentFont[alarm2Minute % 10];
+    displayBuffer[60] = 0;
+  }
+  else if (isFriday && currentTotalMinutes <= jummaEndMinutes) {
+    // Show JUMMA time on Friday (ফজর শেষ হওয়ার পর)
+    displayBuffer[53] = segmentFont[jummaStartHour / 10];
+    displayBuffer[54] = segmentFont[jummaStartHour % 10];
+    displayBuffer[55] = segmentFont[jummaStartMinute / 10];
+    displayBuffer[56] = segmentFont[jummaStartMinute % 10];
+    displayBuffer[57] = segmentFont[jummaEndHour / 10];
+    displayBuffer[58] = segmentFont[jummaEndHour % 10];
+    displayBuffer[59] = segmentFont[jummaEndMinute / 10];
+    displayBuffer[60] = segmentFont[jummaEndMinute % 10];
+  }
+  else if (!isFriday && currentTotalMinutes <= johorEndMinutes) {
+    // Show JOHAR time on non-Friday (ফজর শেষ হওয়ার পর)
+    displayBuffer[53] = segmentFont[alarm3Hour / 10];
+    displayBuffer[54] = segmentFont[alarm3Hour % 10];
+    displayBuffer[55] = segmentFont[alarm3Minute / 10];
+    displayBuffer[56] = segmentFont[alarm3Minute % 10];
+    displayBuffer[57] = segmentFont[alarm4Hour % 10];
+    displayBuffer[58] = segmentFont[alarm4Minute / 10];
+    displayBuffer[59] = segmentFont[alarm4Minute % 10];
+    displayBuffer[60] = 0;
+  }
+  else if (currentTotalMinutes <= asarEndMinutes) {
+    // Show ASAR time (জুম্মা/যোহর শেষ হওয়ার পর)
+    displayBuffer[53] = segmentFont[alarm5Hour % 10];
+    displayBuffer[54] = segmentFont[alarm5Minute / 10];
+    displayBuffer[55] = segmentFont[alarm5Minute % 10];
+    displayBuffer[56] = 0;
+    displayBuffer[57] = segmentFont[alarm6Hour % 10];
+    displayBuffer[58] = segmentFont[alarm6Minute / 10];
+    displayBuffer[59] = segmentFont[alarm6Minute % 10];
+    displayBuffer[60] = 0;
+  }
+  else if (currentTotalMinutes <= magribEndMinutes) {
+    // Show MAGRIB time (আসর শেষ হওয়ার পর)
+    displayBuffer[53] = segmentFont[alarm7Hour % 10];
+    displayBuffer[54] = segmentFont[alarm7Minute / 10];
+    displayBuffer[55] = segmentFont[alarm7Minute % 10];
+    displayBuffer[56] = 0;
+    displayBuffer[57] = segmentFont[alarm8Hour % 10];
+    displayBuffer[58] = segmentFont[alarm8Minute / 10];
+    displayBuffer[59] = segmentFont[alarm8Minute % 10];
+    displayBuffer[60] = 0;
+  }
+  else if (currentTotalMinutes <= eshaEndMinutes) {
+    // Show ESHA time (মাগরিব শেষ হওয়ার পর)
+    displayBuffer[53] = segmentFont[alarm9Hour % 10];
+    displayBuffer[54] = segmentFont[alarm9Minute / 10];
+    displayBuffer[55] = segmentFont[alarm9Minute % 10];
+    displayBuffer[56] = 0;
+    displayBuffer[57] = segmentFont[alarm10Hour % 10];
+    displayBuffer[58] = segmentFont[alarm10Minute / 10];
+    displayBuffer[59] = segmentFont[alarm10Minute % 10];
+    displayBuffer[60] = 0;
+  }
+  else {
+    // After all namaz end times, show next day FAJAR
+    displayBuffer[53] = segmentFont[alarm1Hour % 10];
+    displayBuffer[54] = segmentFont[alarm1Minute / 10];
+    displayBuffer[55] = segmentFont[alarm1Minute % 10];
+    displayBuffer[56] = 0;
+    displayBuffer[57] = segmentFont[alarm2Hour % 10];
+    displayBuffer[58] = segmentFont[alarm2Minute / 10];
+    displayBuffer[59] = segmentFont[alarm2Minute % 10];
+    displayBuffer[60] = 0;
+  }
+
+  // Alarm triggered display (positions 61-68) - UPDATED FOR JUMMA
+  for (int i = 61; i <= 68; i++) displayBuffer[i] = 0;
+  
+  if (alarmTriggered) {
+    int h, m;
+    byte namazChar;
+    
+    // Select which namaz data to show based on activeAlarm/currentNamazRange
+    switch(activeAlarm) {
+      case 2:  // FAJAR END triggered
+        h = alarm2Hour; m = alarm2Minute;
+        namazChar = CHAR_F; // Show "F" for FAJAR
+        break;
+      case 4:  // JOHOR END triggered
+        h = alarm4Hour; m = alarm4Minute;
+        namazChar = CHAR_J; // Show "J" for JOHOR
+        break;
+      case 11: // JUMMA END triggered
+        h = jummaEndHour; m = jummaEndMinute;
+        namazChar = CHAR_J; // Show "J" for JUMMA
+        break;
+      case 6:  // ASAR END triggered
+        h = alarm6Hour; m = alarm6Minute;
+        namazChar = CHAR_S; // Show "S" for ASAR
+        break;
+      case 8:  // MAGRIB END triggered
+        h = alarm8Hour; m = alarm8Minute;
+        namazChar = CHAR_M; // Show "M" for MAGRIB
+        break;
+      case 10: // ESHA END triggered
+        h = alarm10Hour; m = alarm10Minute;
+        namazChar = CHAR_E; // Show "E" for ESHA
+        break;
+      case 100: // FAJAR range active
+        h = hour % 12; if (h == 0) h = 12;
+        m = minute;
+        namazChar = CHAR_F; // Show "F" for FAJAR
+        break;
+      case 200: // JOHOR range active
+        h = hour % 12; if (h == 0) h = 12;
+        m = minute;
+        namazChar = CHAR_J; // Show "J" for JOHOR
+        break;
+      case 700: // JUMMA range active
+        h = hour % 12; if (h == 0) h = 12;
+        m = minute;
+        namazChar = CHAR_J; // Show "J" for JUMMA
+        break;
+      case 300: // ASAR range active
+        h = hour % 12; if (h == 0) h = 12;
+        m = minute;
+        namazChar = CHAR_S; // Show "S" for ASAR
+        break;
+      case 400: // MAGRIB range active
+        h = hour % 12; if (h == 0) h = 12;
+        m = minute;
+        namazChar = CHAR_M; // Show "M" for MAGRIB
+        break;
+      case 500: // ESHA range active
+        h = hour % 12; if (h == 0) h = 12;
+        m = minute;
+        namazChar = CHAR_E; // Show "E" for ESHA
+        break;
+      default:
+        h = hour % 12; if (h == 0) h = 12;
+        m = minute;
+        namazChar = segmentFont[0];
+        break;
+    }
+
+    displayBuffer[61] = CHAR_A;     // 'A'
+    displayBuffer[62] = namazChar;  // F, J, S, M, or E
+    displayBuffer[63] = 0;
+    displayBuffer[64] = segmentFont[h / 10];
+    displayBuffer[65] = segmentFont[h % 10];
+    displayBuffer[66] = CHAR_COLON;
+    displayBuffer[67] = segmentFont[m / 10];
+    displayBuffer[68] = segmentFont[m % 10];
+  }
+
+  // Send to display (up to 71)
+  digitalWrite(strobePin, LOW);
+  delayMicroseconds(2);
+  for (int i = 71; i >= 0; i--) {
+    shiftOut(dataPin, clockPin, MSBFIRST, displayBuffer[i]);
+  }
+  delayMicroseconds(5);
+  digitalWrite(strobePin, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(strobePin, LOW);
+}
+
+void loadTime() {
+  DateTime now = rtc.now();
+  hour = now.hour();
+  minute = now.minute();
+  second = now.second();
+  day = now.day();
+  month = now.month();
+  year = now.year() % 100;
+  dayOfWeek = now.dayOfTheWeek();
+}
+
+void saveTime() {
+  rtc.adjust(DateTime(2000 + year, month, day, hour, minute, second));
+}
+
+void handleSwitches() {
+  static bool lastMenu = HIGH, lastInc = HIGH, lastDec = HIGH, lastLeft = HIGH;
+  bool menuState = digitalRead(menuPin);
+  bool incState = digitalRead(incPin);
+  bool decState = digitalRead(decPin);
+  bool leftState = digitalRead(leftPin);
+
+  unsigned long now = millis();
+  static unsigned long lastIncHold = 0, lastDecHold = 0, lastMenuHold = 0, lastLeftHold = 0;
+
+  // Manual Switch Handling - 31 FIELDS (0-30)
+  if (lastMenu == HIGH && menuState == LOW) {
+    if (editField >= 0 && editField <= 6) saveTime();
+    if (editField >= 7 && editField <= 30) {
+      if (editField >= 11 && editField <= 14) {
+        // JUMMA fields - save to Arduino Internal EEPROM
+        saveJummaToInternalEEPROM();
+      } else {
+        // Other alarm fields - save to 24C512 EEPROM
+        int dayOfYear = getDayOfYear(day, month, 2000 + year);
+        writeDayAlarmToEEPROM(dayOfYear, alarm1Hour, alarm1Minute, alarm2Hour, alarm2Minute,
+                             alarm3Hour, alarm3Minute, alarm4Hour, alarm4Minute,
+                             alarm5Hour, alarm5Minute, alarm6Hour, alarm6Minute,
+                             alarm7Hour, alarm7Minute, alarm8Hour, alarm8Minute,
+                             alarm9Hour, alarm9Minute, alarm10Hour, alarm10Minute);
+      }
+    }
+
+    int previousEditField = editField;
+    
+    // NEW LOGIC: If editField is -1 (not in edit mode), decide where to start
+    if (editField == -1) {
+      // Check if this is power-on or after blinking completed
+      if (lastSavedEditField != -1) {
+        // Resume from last saved position (blinking completed, button pressed again)
+        editField = lastSavedEditField;
+        editModeJustStarted = true;
+      } else {
+        // Power-on case, start from hour (position 0)
+        editField = 0;
+        editModeJustStarted = true;
+      }
+    } else {
+      // Normal increment through fields
+      editField = (editField + 1) % 31;  // 31 fields (0-30)
+    }
+
+    // If exiting edit mode, refresh time from RTC
+    if (previousEditField != -1 && editField == -1) {
+      DateTime currentTime = rtc.now();
+      hour = currentTime.hour();
+      minute = currentTime.minute();
+      second = currentTime.second();
+      day = currentTime.day();
+      month = currentTime.month();
+      year = currentTime.year() % 100;
+      dayOfWeek = currentTime.dayOfTheWeek();
+      loadCurrentDayAlarm();
+    }
+
+    blinkCount = 0;
+    lastMenuHold = now;
+    displayNeedsUpdate = true;
+  } else if (menuState == LOW && now - lastMenuHold > 500) {
+    if (editField >= 0 && editField <= 6) saveTime();
+    if (editField >= 7 && editField <= 30) {
+      if (editField >= 11 && editField <= 14) {
+        saveJummaToInternalEEPROM();
+      } else {
+        int dayOfYear = getDayOfYear(day, month, 2000 + year);
+        writeDayAlarmToEEPROM(dayOfYear, alarm1Hour, alarm1Minute, alarm2Hour, alarm2Minute,
+                             alarm3Hour, alarm3Minute, alarm4Hour, alarm4Minute,
+                             alarm5Hour, alarm5Minute, alarm6Hour, alarm6Minute,
+                             alarm7Hour, alarm7Minute, alarm8Hour, alarm8Minute,
+                             alarm9Hour, alarm9Minute, alarm10Hour, alarm10Minute);
+      }
+    }
+
+    int previousEditField = editField;
+    editField = (editField + 1) % 31;  // 31 fields
+
+    // If exiting edit mode, refresh time from RTC
+    if (previousEditField != -1 && editField == -1) {
+      DateTime currentTime = rtc.now();
+      hour = currentTime.hour();
+      minute = currentTime.minute();
+      second = currentTime.second();
+      day = currentTime.day();
+      month = currentTime.month();
+      year = currentTime.year() % 100;
+      dayOfWeek = currentTime.dayOfTheWeek();
+      loadCurrentDayAlarm();
+    }
+
+    blinkCount = 0;
+    lastMenuHold = now;
+    displayNeedsUpdate = true;
+  }
+
+  if (lastLeft == HIGH && leftState == LOW) {
+    if (editField >= 0 && editField <= 6) saveTime();
+    if (editField >= 7 && editField <= 30) {
+      if (editField >= 11 && editField <= 14) {
+        saveJummaToInternalEEPROM();
+      } else {
+        int dayOfYear = getDayOfYear(day, month, 2000 + year);
+        writeDayAlarmToEEPROM(dayOfYear, alarm1Hour, alarm1Minute, alarm2Hour, alarm2Minute,
+                             alarm3Hour, alarm3Minute, alarm4Hour, alarm4Minute,
+                             alarm5Hour, alarm5Minute, alarm6Hour, alarm6Minute,
+                             alarm7Hour, alarm7Minute, alarm8Hour, alarm8Minute,
+                             alarm9Hour, alarm9Minute, alarm10Hour, alarm10Minute);
+      }
+    }
+
+    int previousEditField = editField;
+    
+    // NEW LOGIC: If editField is -1 (not in edit mode), decide where to start
+    if (editField == -1) {
+      // Check if this is power-on or after blinking completed
+      if (lastSavedEditField != -1) {
+        // Resume from last saved position (blinking completed, button pressed again)
+        editField = lastSavedEditField;
+        editModeJustStarted = true;
+      } else {
+        // Power-on case, start from hour (position 0)
+        editField = 0;
+        editModeJustStarted = true;
+      }
+    } else {
+      // Normal decrement through fields
+      editField = (editField + 30) % 31;  // 31 fields
+    }
+
+    // If exiting edit mode, refresh time from RTC
+    if (previousEditField != -1 && editField == -1) {
+      DateTime currentTime = rtc.now();
+      hour = currentTime.hour();
+      minute = currentTime.minute();
+      second = currentTime.second();
+      day = currentTime.day();
+      month = currentTime.month();
+      year = currentTime.year() % 100;
+      dayOfWeek = currentTime.dayOfTheWeek();
+      loadCurrentDayAlarm();
+    }
+
+    blinkCount = 0;
+    lastLeftHold = now;
+    displayNeedsUpdate = true;
+  } else if (leftState == LOW && now - lastLeftHold > 500) {
+    if (editField >= 0 && editField <= 6) saveTime();
+    if (editField >= 7 && editField <= 30) {
+      if (editField >= 11 && editField <= 14) {
+        saveJummaToInternalEEPROM();
+      } else {
+        int dayOfYear = getDayOfYear(day, month, 2000 + year);
+        writeDayAlarmToEEPROM(dayOfYear, alarm1Hour, alarm1Minute, alarm2Hour, alarm2Minute,
+                             alarm3Hour, alarm3Minute, alarm4Hour, alarm4Minute,
+                             alarm5Hour, alarm5Minute, alarm6Hour, alarm6Minute,
+                             alarm7Hour, alarm7Minute, alarm8Hour, alarm8Minute,
+                             alarm9Hour, alarm9Minute, alarm10Hour, alarm10Minute);
+      }
+    }
+
+    int previousEditField = editField;
+    editField = (editField + 30) % 31;  // 31 fields
+
+    // If exiting edit mode, refresh time from RTC
+    if (previousEditField != -1 && editField == -1) {
+      DateTime currentTime = rtc.now();
+      hour = currentTime.hour();
+      minute = currentTime.minute();
+      second = currentTime.second();
+      day = currentTime.day();
+      month = currentTime.month();
+      year = currentTime.year() % 100;
+      dayOfWeek = currentTime.dayOfTheWeek();
+      loadCurrentDayAlarm();
+    }
+
+    blinkCount = 0;
+    lastLeftHold = now;
+    displayNeedsUpdate = true;
+  }
+
+  if (editField != -1) {
+    if (lastInc == HIGH && incState == LOW) {
+      incrementField();
+      blinkCount = 0;
+      lastIncHold = now;
+      displayNeedsUpdate = true;
+    } else if (incState == LOW && now - lastIncHold > 500) {
+      incrementField();
+      blinkCount = 0;
+      lastIncHold = now;
+      displayNeedsUpdate = true;
+    }
+
+    if (lastDec == HIGH && decState == LOW) {
+      decrementField();
+      blinkCount = 0;
+      lastDecHold = now;
+      displayNeedsUpdate = true;
+    } else if (decState == LOW && now - lastDecHold > 500) {
+      decrementField();
+      blinkCount = 0;
+      lastDecHold = now;
+      displayNeedsUpdate = true;
+    }
+  }
+
+  // IR Remote Handling - 31 FIELDS WITH BLINK RESUME LOGIC
+  if (IrReceiver.decode()) {
+    uint8_t cmd = IrReceiver.decodedIRData.command;
+    switch (cmd) {
+      case 26: // UP button (MENU/NEXT)
+        if (editField >= 0 && editField <= 6) saveTime();
+        if (editField >= 7 && editField <= 30) {
+          if (editField >= 11 && editField <= 14) {
+            saveJummaToInternalEEPROM();
+          } else {
+            int dayOfYear = getDayOfYear(day, month, 2000 + year);
+            writeDayAlarmToEEPROM(dayOfYear, alarm1Hour, alarm1Minute, alarm2Hour, alarm2Minute,
+                                 alarm3Hour, alarm3Minute, alarm4Hour, alarm4Minute,
+                                 alarm5Hour, alarm5Minute, alarm6Hour, alarm6Minute,
+                                 alarm7Hour, alarm7Minute, alarm8Hour, alarm8Minute,
+                                 alarm9Hour, alarm9Minute, alarm10Hour, alarm10Minute);
+          }
+        }
+        {
+          int previousEditField = editField;
+          
+          // NEW LOGIC: If editField is -1 (not in edit mode), decide where to start
+          if (editField == -1) {
+            // Check if this is power-on or after blinking completed
+            if (lastSavedEditField != -1) {
+              // Resume from last saved position (blinking completed, button pressed again)
+              editField = lastSavedEditField;
+            } else {
+              // Power-on case, start from hour (position 0)
+              editField = 0;
+            }
+          } else {
+            // Normal increment through fields
+            editField = (editField + 1) % 31;
+            // If we've completed the cycle (reached 0 again), exit edit mode
+            if (editField == 0 && previousEditField == 30) {
+              lastSavedEditField = previousEditField;  // Save current position
+              //editField = -1;  // Exit edit mode   for right scroll ok
+              DateTime currentTime = rtc.now();
+              hour = currentTime.hour();
+              minute = currentTime.minute();
+              second = currentTime.second();
+              day = currentTime.day();
+              month = currentTime.month();
+              year = currentTime.year() % 100;
+              dayOfWeek = currentTime.dayOfTheWeek();
+              loadCurrentDayAlarm();
+            }
+          }
+        }
+        blinkCount = 0;
+        displayNeedsUpdate = true;
+        break;
+
+      case 27: // DOWN button (Increment current field)
+        if (editField != -1) {
+          incrementField();
+          blinkCount = 0;
+          displayNeedsUpdate = true;
+        }
+        break;
+
+      case 30: // LEFT button (Move to previous field)
+        {
+          if (editField == -1) {
+            if (lastSavedEditField != -1) {
+              editField = lastSavedEditField;
+            } else {
+              editField = 0;
+            }
+          } else {
+            // Normal decrement with cycling
+            editField = (editField + 30) % 31;
+          }
+        }
+        blinkCount = 0;
+        displayNeedsUpdate = true;
+        break;
+      case 31: // RIGHT button (Decrement current field)
+        if (editField != -1) {
+          decrementField();
+          blinkCount = 0;
+          displayNeedsUpdate = true;
+        }
+        break;
+    }
+    IrReceiver.resume(); // Always call after decode
+  }
+
+  lastMenu = menuState;
+  lastInc = incState;
+  lastDec = decState;
+  lastLeft = leftState;
+}
+
+void incrementField() {
+  if (editField == 0) hour = (hour + 1) % 24;
+  if (editField == 1) minute = (minute + 1) % 60;
+  if (editField == 2) second = (second + 1) % 60;
+  if (editField == 3) {
+    day = (day < 31) ? day + 1 : 1;
+    loadCurrentDayAlarm(); // Load alarms for new date
+  }
+  if (editField == 4) {
+    month = (month < 12) ? month + 1 : 1;
+    loadCurrentDayAlarm(); // Load alarms for new date
+  }
+  if (editField == 5) {
+    year = (year < 99) ? year + 1 : 0;
+    loadCurrentDayAlarm(); // Load alarms for new date
+  }
+  if (editField == 6) {
+    dayOfWeek = (dayOfWeek + 1) % 7; // Day of week (0-6)
+  }
+  
+  // NEW FIELD ORDER: ফজর→জুম্মা→যোহর→আসর→মাগরিব→এশা
+  // FAJAR START/END (fields 7-10)
+  if (editField == 7) alarm1Hour = (alarm1Hour % 12) + 1;
+  if (editField == 8) alarm1Minute = (alarm1Minute + 1) % 60;
+  if (editField == 9) alarm2Hour = (alarm2Hour % 12) + 1;
+  if (editField == 10) alarm2Minute = (alarm2Minute + 1) % 60;
+  
+  // JUMMA START/END (fields 11-14)
+  if (editField == 11) jummaStartHour = (jummaStartHour % 12) + 1;
+  if (editField == 12) jummaStartMinute = (jummaStartMinute + 1) % 60;
+  if (editField == 13) jummaEndHour = (jummaEndHour % 12) + 1;
+  if (editField == 14) jummaEndMinute = (jummaEndMinute + 1) % 60;
+  
+  // JOHAR START/END (fields 15-18)
+  if (editField == 15) alarm3Hour = (alarm3Hour % 12) + 1;
+  if (editField == 16) alarm3Minute = (alarm3Minute + 1) % 60;
+  if (editField == 17) alarm4Hour = (alarm4Hour % 12) + 1;
+  if (editField == 18) alarm4Minute = (alarm4Minute + 1) % 60;
+  
+  // ASAR START/END (fields 19-22)
+  if (editField == 19) alarm5Hour = (alarm5Hour % 12) + 1;
+  if (editField == 20) alarm5Minute = (alarm5Minute + 1) % 60;
+  if (editField == 21) alarm6Hour = (alarm6Hour % 12) + 1;
+  if (editField == 22) alarm6Minute = (alarm6Minute + 1) % 60;
+  
+  // MAGRIB START/END (fields 23-26)
+  if (editField == 23) alarm7Hour = (alarm7Hour % 12) + 1;
+  if (editField == 24) alarm7Minute = (alarm7Minute + 1) % 60;
+  if (editField == 25) alarm8Hour = (alarm8Hour % 12) + 1;
+  if (editField == 26) alarm8Minute = (alarm8Minute + 1) % 60;
+  
+  // ESHA START/END (fields 27-30)
+  if (editField == 27) alarm9Hour = (alarm9Hour % 12) + 1;
+  if (editField == 28) alarm9Minute = (alarm9Minute + 1) % 60;
+  if (editField == 29) alarm10Hour = (alarm10Hour % 12) + 1;
+  if (editField == 30) alarm10Minute = (alarm10Minute + 1) % 60;
+}
+
+void decrementField() {
+  if (editField == 0) hour = (hour + 23) % 24;
+  if (editField == 1) minute = (minute + 59) % 60;
+  if (editField == 2) second = (second + 59) % 60;
+  if (editField == 3) {
+    day = (day > 1) ? day - 1 : 31;
+    loadCurrentDayAlarm(); // Load alarms for new date
+  }
+  if (editField == 4) {
+    month = (month > 1) ? month - 1 : 12;
+    loadCurrentDayAlarm(); // Load alarms for new date
+  }
+  if (editField == 5) {
+    year = (year > 0) ? year - 1 : 99;
+    loadCurrentDayAlarm(); // Load alarms for new date
+  }
+  if (editField == 6) {
+    dayOfWeek = (dayOfWeek + 6) % 7; // Day of week (0-6)
+  }
+  
+  // NEW FIELD ORDER: ফজর→জুম্মা→যোহর→আসর→মাগরিব→এশা
+  // FAJAR START/END (fields 7-10)
+  if (editField == 7) alarm1Hour = (alarm1Hour == 1) ? 12 : alarm1Hour - 1;
+  if (editField == 8) alarm1Minute = (alarm1Minute + 59) % 60;
+  if (editField == 9) alarm2Hour = (alarm2Hour == 1) ? 12 : alarm2Hour - 1;
+  if (editField == 10) alarm2Minute = (alarm2Minute + 59) % 60;
+  
+  // JUMMA START/END (fields 11-14)
+  if (editField == 11) jummaStartHour = (jummaStartHour == 1) ? 12 : jummaStartHour - 1;
+  if (editField == 12) jummaStartMinute = (jummaStartMinute + 59) % 60;
+  if (editField == 13) jummaEndHour = (jummaEndHour == 1) ? 12 : jummaEndHour - 1;
+  if (editField == 14) jummaEndMinute = (jummaEndMinute + 59) % 60;
+  
+  // JOHAR START/END (fields 15-18)
+  if (editField == 15) alarm3Hour = (alarm3Hour == 1) ? 12 : alarm3Hour - 1;
+  if (editField == 16) alarm3Minute = (alarm3Minute + 59) % 60;
+  if (editField == 17) alarm4Hour = (alarm4Hour == 1) ? 12 : alarm4Hour - 1;
+  if (editField == 18) alarm4Minute = (alarm4Minute + 59) % 60;
+  
+  // ASAR START/END (fields 19-22)
+  if (editField == 19) alarm5Hour = (alarm5Hour == 1) ? 12 : alarm5Hour - 1;
+  if (editField == 20) alarm5Minute = (alarm5Minute + 59) % 60;
+  if (editField == 21) alarm6Hour = (alarm6Hour == 1) ? 12 : alarm6Hour - 1;
+  if (editField == 22) alarm6Minute = (alarm6Minute + 59) % 60;
+  
+  // MAGRIB START/END (fields 23-26)
+  if (editField == 23) alarm7Hour = (alarm7Hour == 1) ? 12 : alarm7Hour - 1;
+  if (editField == 24) alarm7Minute = (alarm7Minute + 59) % 60;
+  if (editField == 25) alarm8Hour = (alarm8Hour == 1) ? 12 : alarm8Hour - 1;
+  if (editField == 26) alarm8Minute = (alarm8Minute + 59) % 60;
+  
+  // ESHA START/END (fields 27-30)
+  if (editField == 27) alarm9Hour = (alarm9Hour == 1) ? 12 : alarm9Hour - 1;
+  if (editField == 28) alarm9Minute = (alarm9Minute + 59) % 60;
+  if (editField == 29) alarm10Hour = (alarm10Hour == 1) ? 12 : alarm10Hour - 1;
+  if (editField == 30) alarm10Minute = (alarm10Minute + 59) % 60;
+}
