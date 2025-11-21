@@ -1,0 +1,141 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                                                                           ║
+║              PICkit 3 → PIC16F676 Quick Reference Card                   ║
+║                     (Print this for easy reference!)                     ║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│  STEP 1: Wire Connections (5 wires required)                              │
+└───────────────────────────────────────────────────────────────────────────┘
+
+    PICkit 3        Wire Color        PIC16F676        Pin Number
+    ─────────       ──────────        ─────────        ──────────
+    Pin 1    ───→   White/Black  ───→   RA3      ───→    4
+    Pin 2    ───→   Red          ───→   VDD      ───→    1
+    Pin 3    ───→   Black        ───→   VSS      ───→   14
+    Pin 4    ───→   White        ───→   RA0      ───→   13
+    Pin 5    ───→   Yellow       ───→   RA1      ───→   12
+    Pin 6    ───→   (not used)
+
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│  STEP 2: LED Connections (5 LEDs + 5 Resistors)                          │
+└───────────────────────────────────────────────────────────────────────────┘
+
+    RC0 (Pin 10) → LED1 → 330Ω → GND
+    RC1 (Pin  9) → LED2 → 330Ω → GND
+    RC2 (Pin  8) → LED3 → 330Ω → GND
+    RC3 (Pin  7) → LED4 → 330Ω → GND
+    RC4 (Pin  6) → LED5 → 330Ω → GND
+
+    LED Polarity:  + (long leg)  → PIC pin
+                   - (short leg) → Resistor
+
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│  STEP 3: Software Steps (MPLAB IPE)                                      │
+└───────────────────────────────────────────────────────────────────────────┘
+
+    1. Open MPLAB IPE
+    2. Family: Mid-Range 8-bit MCUs
+    3. Device: PIC16F676
+    4. Tool: PICkit 3
+    5. Browse: pic16f676_5led.hex
+    6. Click: Connect
+    7. Click: Program
+    8. Wait for: "Programming/Verify complete"
+    9. Disconnect PICkit 3
+   10. Apply 5V power to PIC
+   11. ✓ LEDs should blink!
+
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│  TROUBLESHOOTING                                                          │
+└───────────────────────────────────────────────────────────────────────────┘
+
+    Problem                      Solution
+    ───────────────────────────────────────────────────────
+    PICkit not detected      →   Check USB cable
+                                  Reinstall driver
+
+    Target not detected      →   Check all 5 wires
+                                  Verify VDD = 5V
+
+    Programming failed       →   Erase chip first
+                                  Use slower speed
+
+    LEDs not blinking        →   Disconnect PICkit
+                                  Use external 5V power
+                                  Check LED polarity
+
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│  PICkit 3 LED Status                                                      │
+└───────────────────────────────────────────────────────────────────────────┘
+
+    Green   →  Connected and ready
+    Yellow  →  Busy (programming)
+    Red     →  Error!
+    Blue    →  Target powered
+
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│  IMPORTANT NOTES                                                          │
+└───────────────────────────────────────────────────────────────────────────┘
+
+    ⚠️  Use EXACTLY 5V (not more!)
+    ⚠️  Always use 330Ω resistors with LEDs
+    ⚠️  Check LED polarity before connecting
+    ⚠️  Disconnect PICkit before final power-up
+    ⚠️  Keep wires SHORT for reliable programming
+
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│  DOWNLOADS                                                                │
+└───────────────────────────────────────────────────────────────────────────┘
+
+    MPLAB IPE:
+    https://www.microchip.com/mplab/mplab-integrated-programming-environment
+
+    Size: ~150MB
+
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│  Expected Result                                                          │
+└───────────────────────────────────────────────────────────────────────────┘
+
+    Pattern:
+        All 5 LEDs ON  (1 second)
+        All 5 LEDs OFF (1 second)
+        Repeat...
+
+        ● ● ● ● ●  (1s)
+        ○ ○ ○ ○ ○  (1s)
+        ● ● ● ● ●  (1s)
+        ...
+
+
+═══════════════════════════════════════════════════════════════════════════
+
+                    Quick Command Line Upload
+
+    If using command line (for advanced users):
+
+    cd "C:\Program Files\Microchip\MPLABX\mplab_platform\bin"
+
+    ipecmd.exe -P PIC16F676 -T PICKIT3 -F "path\pic16f676_5led.hex" -M
+
+═══════════════════════════════════════════════════════════════════════════
+
+
+                         Print & Keep Handy!
+
+                  For detailed guide, see files:
+                  - PICKIT3_UPLOAD_GUIDE.md (Full guide)
+                  - PICKIT3_CONNECTION_DIAGRAM.txt (Diagrams)
+                  - QUICK_START.md (5-minute guide)
+
+
+═══════════════════════════════════════════════════════════════════════════

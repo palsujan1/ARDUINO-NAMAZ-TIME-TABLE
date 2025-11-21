@@ -1,0 +1,216 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                  PICkit 3 to PIC16F676 Connection Diagram                 ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                            PICkit 3 Connector                            │
+│                                                                          │
+│         ┌───────────────────────────────────────────┐                   │
+│         │  1     2     3     4     5     6          │                   │
+│         │ MCLR  VDD   VSS   PGD   PGC   LVP         │                   │
+│         └───────────────────────────────────────────┘                   │
+│            │     │     │     │     │     X (not used)                   │
+│            │     │     │     │     │                                    │
+└────────────┼─────┼─────┼─────┼─────┼────────────────────────────────────┘
+             │     │     │     │     │
+             │     │     │     │     │
+    (White)  │     │(Red)│(Blk)│(Wht)│(Yellow)
+             │     │     │     │     │
+             │     │     │     │     │
+┌────────────┼─────┼─────┼─────┼─────┼────────────────────────────────────┐
+│            │     │     │     │     │                                    │
+│            ▼     ▼     ▼     ▼     ▼                                    │
+│         ┌───────────────────────────────┐                               │
+│         │      PIC16F676 (14-pin)       │                               │
+│         │                                │                               │
+│   VDD ──┤ 1                          14 ├── VSS (GND)                   │
+│         │                                │    ▲                          │
+│   RA5 ──┤ 2                          13 ├──────┼── RA0/PGD             │
+│         │                                │      │   (DATA)               │
+│   RA4 ──┤ 3                          12 ├──────┼── RA1/PGC             │
+│    ▲    │                                │      │   (CLOCK)              │
+│    │    │                           ●11 ├── RA2                         │
+│ MCLR────┤ 4  RA3/MCLR                   │                               │
+│         │                                │                               │
+│   RC5 ──┤ 5                          10 ├── RC0 → LED1 → 330Ω → GND    │
+│         │                                │                               │
+│   RC4 ──┤ 6                           9 ├── RC1 → LED2 → 330Ω → GND    │
+│         │                                │                               │
+│   RC3 ──┤ 7                           8 ├── RC2 → LED3 → 330Ω → GND    │
+│         │                                │                               │
+│         └───────────────────────────────┘                               │
+│                                                                          │
+│   RC3 (Pin 7) ──→ LED4 → 330Ω → GND                                    │
+│   RC4 (Pin 6) ──→ LED5 → 330Ω → GND                                    │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                         Connection Summary Table                          ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+┌──────────┬──────────────┬───────────────┬──────────────────────────────┐
+│ PICkit 3 │  Wire Color  │  PIC16F676    │         Function             │
+│   Pin    │  (Typical)   │     Pin       │                              │
+├──────────┼──────────────┼───────────────┼──────────────────────────────┤
+│    1     │  White/Black │   4 (RA3)     │ MCLR - Programming Enable    │
+├──────────┼──────────────┼───────────────┼──────────────────────────────┤
+│    2     │     Red      │   1 (VDD)     │ Power +5V                    │
+├──────────┼──────────────┼───────────────┼──────────────────────────────┤
+│    3     │    Black     │  14 (VSS)     │ Ground (GND)                 │
+├──────────┼──────────────┼───────────────┼──────────────────────────────┤
+│    4     │    White     │  13 (RA0)     │ PGD - Programming Data       │
+├──────────┼──────────────┼───────────────┼──────────────────────────────┤
+│    5     │    Yellow    │  12 (RA1)     │ PGC - Programming Clock      │
+├──────────┼──────────────┼───────────────┼──────────────────────────────┤
+│    6     │      -       │      -        │ LVP - Not Used               │
+└──────────┴──────────────┴───────────────┴──────────────────────────────┘
+
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                      LED Connection Details                               ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+Each LED connection:
+
+    PIC Pin ──→ LED (+) ──→ LED (-) ──→ 330Ω Resistor ──→ GND
+
+┌────────────┬──────────────────────────────────────────────────────┐
+│  PIC Pin   │              Connection                              │
+├────────────┼──────────────────────────────────────────────────────┤
+│ RC0 (10)   │ ──→ LED1 (Any color) ──→ 330Ω ──→ GND              │
+├────────────┼──────────────────────────────────────────────────────┤
+│ RC1 (9)    │ ──→ LED2 (Any color) ──→ 330Ω ──→ GND              │
+├────────────┼──────────────────────────────────────────────────────┤
+│ RC2 (8)    │ ──→ LED3 (Any color) ──→ 330Ω ──→ GND              │
+├────────────┼──────────────────────────────────────────────────────┤
+│ RC3 (7)    │ ──→ LED4 (Any color) ──→ 330Ω ──→ GND              │
+├────────────┼──────────────────────────────────────────────────────┤
+│ RC4 (6)    │ ──→ LED5 (Any color) ──→ 330Ω ──→ GND              │
+└────────────┴──────────────────────────────────────────────────────┘
+
+LED Polarity:
+    + (Anode)  = Long leg  → Connect to PIC pin
+    - (Cathode) = Short leg → Connect to Resistor → GND
+
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                         Breadboard Layout                                 ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+                        Breadboard View
+
+    +5V Rail ════════════════════════════════════ +5V Power Supply
+                         │
+                         │
+    PICkit3 Pin2(Red)────┤
+                         │
+                    ┌────┴────┐
+                    │         │
+                    │ PIC676  │
+                    │         │
+                    │  [___]  │
+                    │  1  14  │─────────┐
+                    │  2  13  │────┐    │
+                    │  3  12  │───┐│    │
+                    │  4  11  │   ││    │
+                    │  5  10  │   ││    │
+                    │  6   9  │   ││    │
+                    │  7___8  │   ││    │
+                    └─────────┘   ││    │
+                         │        ││    │
+                         │        ││    │
+    PICkit3 Pin4 ────────┘        ││    │
+    PICkit3 Pin5 ─────────────────┘│    │
+    PICkit3 Pin3 ───────────────────────┘
+    PICkit3 Pin1 ───────────────────┘
+                         │
+                         │
+    GND Rail ═════════════════════════════════════ GND
+                         │
+                    [LED circuits]
+
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                      Power Supply Options                                 ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+Option 1: PICkit 3 provides power (Programming only)
+    ┌────────────┐
+    │  PICkit 3  │
+    │   Pin 2    │──→ +5V to PIC VDD
+    │   Pin 3    │──→ GND to PIC VSS
+    └────────────┘
+    Note: Only for programming! Disconnect for final run.
+
+Option 2: External 5V Supply (Recommended for final run)
+    ┌────────────┐
+    │ 5V Adapter │
+    │  or USB    │──→ +5V to PIC VDD
+    │   Power    │──→ GND to PIC VSS
+    └────────────┘
+
+Option 3: Battery
+    ┌────────────┐
+    │  3x 1.5V   │
+    │  AA Cells  │──→ 4.5V to PIC VDD (OK)
+    │ (Series)   │──→ GND to PIC VSS
+    └────────────┘
+
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                    Quick Troubleshooting Guide                            ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+Problem: PICkit 3 not detected
+├─ Check USB cable
+├─ Check PICkit 3 LED (should be green)
+└─ Reinstall MPLAB IPE
+
+Problem: Target not detected
+├─ Check all 5 wire connections
+├─ Verify VDD = 5V (use multimeter)
+└─ Check VSS = GND
+
+Problem: Programming failed
+├─ Try slower programming speed
+├─ Erase chip first
+└─ Check for short circuits
+
+Problem: LEDs not blinking after programming
+├─ Disconnect PICkit 3
+├─ Use separate 5V power supply
+├─ Check LED polarity (+/- correct?)
+└─ Verify 330Ω resistors are present
+
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                          Safety Warnings                                  ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+⚠️  Use exactly 5V - Higher voltage will damage the chip!
+⚠️  Always use resistors with LEDs - Direct connection will burn LED!
+⚠️  Check polarity before connecting - Wrong polarity = damage!
+⚠️  Don't hotplug while programming - Power off first!
+⚠️  Use proper wire gauge - Too thin = unreliable connection!
+
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                         Success Indicators                                ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+✓ PICkit 3 LED: Green (connected and ready)
+✓ MPLAB IPE shows: "Target detected: PIC16F676"
+✓ Programming: Shows progress bar
+✓ Verification: "Verification complete"
+✓ LEDs: Start blinking after power applied
+✓ Pattern: All 5 LEDs ON (1s) → OFF (1s) → repeat
+
+
+═══════════════════════════════════════════════════════════════════════════
+
+For detailed step-by-step instructions, see: PICKIT3_UPLOAD_GUIDE.md
+For quick start, see: QUICK_START.md
+
+═══════════════════════════════════════════════════════════════════════════
