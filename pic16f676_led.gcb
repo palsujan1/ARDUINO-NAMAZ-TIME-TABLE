@@ -1,0 +1,44 @@
+'''
+''' PIC16F676 - 5 LED Blinking Program
+''' Compiler: Great Cow BASIC (Very Simple & Small)
+''' Download: https://gcbasic.sourceforge.net/
+''' Size: Only ~15MB
+'''
+''' This is the EASIEST way to program PIC!
+'''
+
+'Chip Settings
+#chip 16F676, 4          'PIC16F676 running at 4MHz
+
+'Pin Configuration
+#define LED1 PORTC.0     'RC0
+#define LED2 PORTC.1     'RC1
+#define LED3 PORTC.2     'RC2
+#define LED4 PORTC.3     'RC3
+#define LED5 PORTC.4     'RC4
+
+'Set pins as OUTPUT
+Dir LED1 Out
+Dir LED2 Out
+Dir LED3 Out
+Dir LED4 Out
+Dir LED5 Out
+
+'Main Program Loop
+Do Forever
+    'Turn ON all LEDs
+    LED1 = 1
+    LED2 = 1
+    LED3 = 1
+    LED4 = 1
+    LED5 = 1
+    Wait 1 s              '1 second delay
+
+    'Turn OFF all LEDs
+    LED1 = 0
+    LED2 = 0
+    LED3 = 0
+    LED4 = 0
+    LED5 = 0
+    Wait 1 s              '1 second delay
+Loop
