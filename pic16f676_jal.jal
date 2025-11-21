@@ -1,0 +1,56 @@
+-- ============================================
+-- PIC16F676 - 5 LED Blinking Program
+-- Compiler: JAL (Just Another Language)
+-- Download: http://justanotherlanguage.org/
+-- Size: ~20MB (Small & Fast)
+--
+-- JAL is specially designed for PIC!
+-- ============================================
+
+include 16f676                -- Include PIC16F676 definition
+
+-- Configuration
+pragma target clock 4_000_000           -- 4 MHz internal oscillator
+pragma target OSC INTOSC_NOCLKOUT      -- Internal oscillator, no clock out
+pragma target WDT DISABLED              -- Watchdog timer disabled
+pragma target MCLRE DISABLED            -- MCLR pin is digital input
+pragma target BROWNOUT ENABLED          -- Brown-out reset enabled
+pragma target PWRTE ENABLED             -- Power-up timer enabled
+pragma target CPD DISABLED              -- Data EEPROM code protection disabled
+pragma target CP DISABLED               -- Flash program code protection disabled
+
+-- Enable digital I/O
+enable_digital_io()
+
+-- Define LED pins
+alias led1 is pin_c0
+alias led2 is pin_c1
+alias led3 is pin_c2
+alias led4 is pin_c3
+alias led5 is pin_c4
+
+-- Set LED pins as output
+pin_c0_direction = output
+pin_c1_direction = output
+pin_c2_direction = output
+pin_c3_direction = output
+pin_c4_direction = output
+
+-- Main program loop
+forever loop
+   -- Turn ON all LEDs
+   led1 = high
+   led2 = high
+   led3 = high
+   led4 = high
+   led5 = high
+   delay_1s(1)              -- 1 second delay
+
+   -- Turn OFF all LEDs
+   led1 = low
+   led2 = low
+   led3 = low
+   led4 = low
+   led5 = low
+   delay_1s(1)              -- 1 second delay
+end loop

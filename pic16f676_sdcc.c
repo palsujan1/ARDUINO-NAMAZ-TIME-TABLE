@@ -3,10 +3,19 @@
  * Compiler: SDCC (Free & Open Source)
  * Size: Very small (~10MB download)
  *
+ * ⚠️ WARNING: SDCC PIC support is EXPERIMENTAL and may have bugs!
+ * ⚠️ SDCC is mainly for 8051, PIC support is limited
+ * ⚠️ RECOMMENDED: Use Great Cow BASIC instead (pic16f676_led.gcb)
+ *
  * Download SDCC: https://sdcc.sourceforge.net/
  *
  * Compile command:
  * sdcc -mpic14 -p16f676 pic16f676_sdcc.c
+ *
+ * Better alternatives:
+ * 1. Great Cow BASIC (pic16f676_led.gcb) - EASIEST & BEST for PIC!
+ * 2. JAL (pic16f676_jal.jal) - Good for PIC
+ * 3. Pre-compiled HEX (pic16f676_5led.hex) - No compiler needed!
  */
 
 #include <pic16f676.h>
